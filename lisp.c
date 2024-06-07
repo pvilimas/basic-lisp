@@ -104,20 +104,24 @@ TokenList tokenize(char* prog) {
 
 typedef enum {
 	A_NONE,
-	A_ATOM,
-	A_LIST
+	A_ATOM, 		// a generic string, kind of a fallback option
+	A_INT,			// an integer literal
+	A_LIST,			// a list of 0 or more ASTNode
+	A_PARSE_ERROR 	// propagates
 } ASTType;
 
 typedef struct ASTNode {
 	ASTType type;
-	
-	char* atom_str;
-	int atom_str_len;
-
-	int number_value_int;
-
-	struct ASTNode** list_items;
-	int list_len;
+	union {
+		// A_ATOM
+		struct { char* atom_str; int atom_len; };
+		// A_INT
+		int int_value;
+		// A_LIST
+		struct { struct ASTNode** list_items; int list_len; };
+		// A_PARSE_ERROR
+		char* errmsg;
+	};
 } ASTNode;
 
 #define node_new() \
@@ -130,14 +134,20 @@ void node_print_rec(ASTNode* node, int level) {
 	}
 	if (node->type == A_ATOM) {
 		printf("ASTNode<type=A_ATOM, \"%.*s\">\n",
-			node->atom_str_len,
+			node->atom_len,
 			node->atom_str);
+	} else if (node->type == A_INT) {
+		printf("ASTNode<type=A_INT, %d>\n",
+			node->int_value);
 	} else if (node->type == A_LIST) {
 		printf("ASTNode<type=A_LIST, %d items>:\n",
 			node->list_len);
 		for (int i = 0; i < node->list_len; i++) {
 			node_print_rec(node->list_items[i], level + 1);
 		}
+	} else if (node->type == A_PARSE_ERROR) {
+		printf("ASTNode<type=A_PARSE_ERROR, msg=\"%s\">\n",
+			node->errmsg);
 	} else {
 		printf("ASTNode<type=A_UNIMPLEMENTED: see line %d>\n", __LINE__);
 	}
@@ -165,7 +175,7 @@ ASTNode* make_ast_single(Token t) {
 	ASTNode* root = node_new();
 	root->type = A_ATOM;
 	root->atom_str = t.atom_str;
-	root->atom_str_len = t.atom_len;
+	root->atom_len = t.atom_len;
 	return root;
 }
 
@@ -242,313 +252,197 @@ ASTNode* make_ast(TokenList tl) {
 	}
 }
 
-typedef enum {
-	R_NONE,
-	R_PARSE_ERROR,
-	R_INT
-} ResultType;
+void simplify_ast(ASTNode** ast);
+
+// assumes (+ n1 n2 ... ), all A_INT
+// replaces this with (<sum>)
+void ast_macro_add(ASTNode** ast) {
+
+	// (+) -> (0)
+	if ((*ast)->list_len == 1) {
+		(*ast)->type = A_INT;
+		(*ast)->int_value = 0;
+		return;
+	}
+
+	// (+ x) -> (x)
+	else if ((*ast)->list_len == 2) {
+		ASTNode** arg_n1 = &(*ast)->list_items[1];
+
+		// try to simplify down to an int
+		simplify_ast(arg_n1);
+		if ((*arg_n1)->type == A_INT) {
+			(*ast)->type = A_INT;
+			(*ast)->int_value = (*arg_n1)->int_value;
+		}
+
+		// expression failed to simplify
+		else {
+			(*ast)->type = A_PARSE_ERROR;
+		}
+		return;
+	}
+
+	// handle varargs
+
+	int sum = 0;
+	for (int i = 1; i < (*ast)->list_len; i++) {
+		ASTNode** arg_n = &(*ast)->list_items[i];
+		
+		// try to simplify down to an int
+		simplify_ast(arg_n);
+		if ((*arg_n)->type == A_INT) {
+			sum += (*arg_n)->int_value;
+		}
+
+		// expression failed to simplify
+		else {
+			(*ast)->type = A_PARSE_ERROR;
+			return;
+		}
+	}
+
+	(*ast)->type = A_INT;
+	(*ast)->int_value = sum;
+}
+
+// assumes (* n1 n2 ... ), all A_INT
+// replaces this with (<product>)
+void ast_macro_mul(ASTNode** ast) {
+
+	// (*) -> (1)
+	if ((*ast)->list_len == 1) {
+		(*ast)->type = A_INT;
+		(*ast)->int_value = 1;
+		return;
+	}
+
+	// (* x) -> (x)
+	else if ((*ast)->list_len == 2) {
+		ASTNode** arg_n1 = &(*ast)->list_items[1];
+
+		// try to simplify down to an int
+		simplify_ast(arg_n1);
+		if ((*arg_n1)->type == A_INT) {
+			(*ast)->type = A_INT;
+			(*ast)->int_value = (*arg_n1)->int_value;
+		}
+
+		// expression failed to simplify
+		else {
+			(*ast)->type = A_PARSE_ERROR;
+		}
+		return;
+	}
+
+	// handle varargs
+
+	int product = 1;
+	for (int i = 1; i < (*ast)->list_len; i++) {
+		ASTNode** arg_n = &(*ast)->list_items[i];
+		
+		// try to simplify down to an int
+		simplify_ast(arg_n);
+		if ((*arg_n)->type == A_INT) {
+			product *= (*arg_n)->int_value;
+		}
+
+		// expression failed to simplify
+		else {
+			(*ast)->type = A_PARSE_ERROR;
+			return;
+		}
+	}
+
+	(*ast)->type = A_INT;
+	(*ast)->int_value = product;
+}
 
 typedef struct {
-	ResultType type;
-	union {	
-		int int_value;
-		struct { char* data; int len; } string_value;
-	};
-} Result;
-
-// a function that can be used inside eval
-typedef struct {
-	const char* name;
-	int n_args; // -1 for variable
-	Result (*fn)(ASTNode*);
-} ExecutionFn;
-
-// macros that manipulate the ast
-typedef struct {
-	const char* name;
-	int n_args;
+	char* internal_name; // in the program
+	int num_args; // -1 for varargs
 	void (*fn)(ASTNode**);
 } Macro;
 
-Result execute_ast(ASTNode* ast);
-
-// just int for now
-// remember 0 is the function name, 1 is the first arg
-Result parse_argument_as_number(ASTNode* ast, int argnum) {
-	if (ast->list_items[argnum]->type == A_LIST) {
-		Result r1 = execute_ast(ast->list_items[argnum]);
-		if (r1.type == R_PARSE_ERROR) {
-			return r1;
-		}
-
-		return r1;
-	} else {
-		return (Result) {
-			.type = R_INT,
-			.int_value = atoi(ast->list_items[argnum]->atom_str)
-		};
-	}
-}
-
-bool ast_matches_macro(ASTNode* ast, Macro* m) {
-	if (ast->type != A_LIST)
-		return false;
-
-	if (strncmp(m->name,
-	ast->list_items[0]->atom_str,
-	ast->list_items[0]->atom_str_len) != 0)
-		return false;
-
-	if (m->n_args == -1)
-		return true;
-
-	if (ast->list_len != m->n_args + 1)
-		return false;
-
-	return true;
-}
-
-void try_execute_macro(ASTNode** ast, Macro* m) {
-	if (ast_matches_macro(*ast, m)) {
-		m->fn(ast);
-	}
-}
-
-// checks if an ast represents a valid expression at the root or a valid function call (fn x y z (...) ... ) AND matches the given fn
-// ef_***() will assume this has returned true for that ef type
-bool ast_matches_fn(ASTNode* ast, ExecutionFn* ef) {
-	if (ast->type != A_LIST)
-		return false;
-
-	if (strncmp(ef->name,
-	ast->list_items[0]->atom_str,
-	ast->list_items[0]->atom_str_len) != 0)
-		return false;
-
-	if (ef->n_args == -1)
-		return true;
-
-	if (ast->list_len != ef->n_args + 1)
-		return false;
-
-	return true;
-}
-
-// (+ x y z ...)
-Result ef_add(ASTNode* ast) {
-
-	int sum = 0;
-	for (int i = 0; i < ast->list_len; i++) {
-		Result r = parse_argument_as_number(ast, i);
-		if (r.type == R_PARSE_ERROR) {
-			return r;
-		}
-
-		sum += r.int_value;
-	}
-
-	return (Result) {
-		.type = R_INT,
-		.int_value = sum	
-	};
-}
-
-// (- n1 n2)
-Result ef_sub(ASTNode* ast) {
-	int n1;
-	int n2;
-
-	Result r1 = parse_argument_as_number(ast, 1);
-	Result r2 = parse_argument_as_number(ast, 2);
-
-	if (r1.type == R_PARSE_ERROR || r2.type == R_PARSE_ERROR) {
-		return (Result){.type=R_PARSE_ERROR};
-	}
-
-	n1 = r1.int_value;
-	n2 = r2.int_value;
-
-	return (Result){
-		.type = R_INT,
-		.int_value = n1 - n2
-	};
-}
-
-// (* x y z ...)
-Result ef_mul(ASTNode* ast) {
-
-	int product = 0;
-	for (int i = 0; i < ast->list_len; i++) {
-		Result r = parse_argument_as_number(ast, i);
-		if (r.type == R_PARSE_ERROR) {
-			return r;
-		}
-
-		product *= r.int_value;
-	}
-
-	return (Result) {
-		.type = R_INT,
-		.int_value = product
-	};
-}
-
-// generate random number
-// (rand min max)
-Result ef_rand(ASTNode* ast) {
-
-	int min;
-	int max;
-
-	Result r_min = parse_argument_as_number(ast, 1);
-	Result r_max = parse_argument_as_number(ast, 2);
-
-	if (r_min.type == R_PARSE_ERROR || r_max.type == R_PARSE_ERROR) {
-		return (Result){.type=R_PARSE_ERROR};
-	}
-
-	min = r_min.int_value;
-	max = r_max.int_value;
-
-	return (Result){
-		.type = R_INT,
-		.int_value = min + rand() % (max - min)
-	};
-}
-
-// base level functions defined in C
-// you can detect the end of the list when ef.name == NULL
-ExecutionFn EF_LIST[] = {
-	{"+", -1, ef_add},
-	{"-", 2, ef_sub},
-	{"*", -1, ef_mul},
-	{"rand", 2, ef_rand},
+Macro BUILTIN_MACROS[] = {
+	{"+", -1, ast_macro_add},
+	{"*", -1, ast_macro_mul},
 	{0}
 };
 
-// macro that turns (inc x) into (+ x 1)
-void m_inc(ASTNode** ast) {
+// simplify the whole thing down by executing different macros, replacing in-place
+void simplify_ast(ASTNode** ast) {
+	ASTNode* root = *ast;
 
-	Result r = parse_argument_as_number(*ast, 1);
-
-	if (r.type == R_PARSE_ERROR) {
+	if (root->type == A_INT) {
+		// nothing to do, already simplified
 		return;
-	}
-
-	// newly allocated, TODO free all these
-	ASTNode* item0 = node_new();
-	item0->type = A_ATOM;
-	item0->atom_str = "+";
-	item0->atom_str_len = 1;
-
-	// not newly allocated
-	ASTNode* item1 = (*ast)->list_items[1];
-
-	ASTNode* item2 = node_new();
-	item2->type = A_ATOM;
-	item2->atom_str = "1";
-	item2->atom_str_len = 1;
-
-	// TODO actually free all the sub-nodes lol, write a function for this
-	free((*ast)->list_items);
-
-	(*ast)->list_items = malloc(3 * sizeof(ASTNode*));
-	(*ast)->list_len = 3;
-	(*ast)->list_items[0] = item0;
-	(*ast)->list_items[1] = item1;
-	(*ast)->list_items[2] = item2;
-}
-
-// macro that turns (range 3 7) into (3 4 5 6)
-// it does modify the old node
-void m_range(ASTNode** ast) {
-
-	int start;
-	int stop;
-
-	Result r_start = parse_argument_as_number(*ast, 1);
-	Result r_stop = parse_argument_as_number(*ast, 2);
-
-	if (r_start.type == R_PARSE_ERROR || r_stop.type == R_PARSE_ERROR) {
-		return;
-	}
-
-	start = r_start.int_value;
-	stop = r_stop.int_value;
-
-	free((*ast)->list_items);
-	(*ast)->list_len = stop - start;
-	(*ast)->list_items = malloc((*ast)->list_len * sizeof(ASTNode*));
-
-	char buf[20];
-	int index = 0;
-	for (int i = start; i < stop; i++) {
-		snprintf(buf, 20, "%d", i);
-	
-		ASTNode* item = node_new();
-		item->type = A_ATOM;
-		item->atom_str = strdup(buf);
-		item->atom_str_len = strlen(buf);
-
-		(*ast)->list_items[index] = item;
-		index++;
-	}
-}
-
-Macro M_LIST[] = {
-	{"inc", 1, m_inc},
-	{"range", 2, m_range},
-	{0}
-};
-
-Result execute_ast(ASTNode* ast) {
-
-	if (ast == NULL) {
-		return (Result) {
-			.type = R_PARSE_ERROR
-		};
-	}
-
-	if (ast->type == A_LIST) {
-		// check macros
-		for (Macro* m = &M_LIST[0]; !!m->name; m++) {
-			try_execute_macro(&ast, m);
-		}
-
-		// check functions
-		for (ExecutionFn* ef = &EF_LIST[0]; !!ef->name; ef++) {
-			if (ast_matches_fn(ast, ef)) {
-				return ef->fn(ast);
+	} else if (root->type == A_ATOM) {
+		// try to convert to number
+		bool is_num = true;
+		for (int i = 0; i < root->atom_len; i++) {
+			if (!isdigit(root->atom_str[i])) {
+				is_num = false;
+				break;
 			}
 		}
-	}
+		if (is_num) {
+			root->type = A_INT;
+			root->int_value = atoi(root->atom_str);
+			return;
+		}
 
-	return (Result){.type=R_PARSE_ERROR}; 
+		// number conv failed, try to do a variable lookup i guess?
+		// other stuff here
+		// TODO
+	} else if (root->type == A_LIST) {
+
+		// case 0: empty list ()
+		if (root->list_len == 0) {
+			return;
+		}
+	
+		// case 1: macro call (m-name arg0 arg1 arg2 ... )
+		// macros can have 0 arguments so this must be done before case 2
+
+		if (root->list_items[0]->type == A_ATOM) {
+			for (Macro* m = &BUILTIN_MACROS[0]; !!m->internal_name; m++) {
+
+				bool name_matches = (strncmp(m->internal_name,
+					root->list_items[0]->atom_str,
+					root->list_items[0]->atom_len) == 0);
+				// +1 for m-name
+				bool argcount_matches = (root->list_len == m->num_args + 1);
+				bool ignore_argcount = (m->num_args == -1);
+
+				bool all_good = name_matches &&
+					(argcount_matches || ignore_argcount);
+
+				if (!all_good) {
+					continue;
+				}
+
+				// execute the macro to modify the syntax tree
+				m->fn(&root);
+				return;
+			}
+		}
+
+		root->type = A_PARSE_ERROR;
+		root->errmsg = "idk lol";
+	}
 }
 
 int main() {
-	srand(time(0));
-	// char* prog = "(sum (* 4 1) (* 5 10) (* 6 100) (* 7 1000))"; // =654
-	// char* prog = "(+ 1 (sum 5 6 7 8 9))";
-	// char* prog = "(rand 0 1000)";
-	char* prog = "(range 1 11)";
+	char* prog = "(+ (* 4 1) (* 5 10) (* 6 100) (* 7 1000))";
 	
 	TokenList tl = tokenize(prog);
 	// TODO make sure parens are balanced etc
 	// assert_token_list_well_formed(tl);
 	// tl_print(tl);
 	ASTNode* ast = make_ast(tl);
-
-	node_print(ast);
-	Result r = execute_ast(ast);
+	simplify_ast(&ast);
 	node_print(ast);
 
-	if (r.type == R_PARSE_ERROR) {
-		printf("parse error\n");
-	} else {
-		printf("Type: %d\n", r.type);
-		printf("Value: %d\n", r.int_value);
-	}
-	
 	return 0;
 }
