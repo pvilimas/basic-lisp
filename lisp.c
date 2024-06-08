@@ -485,6 +485,8 @@ ASTNode* make_ast(TokenList tl) {
 	}
 }
 
+// simplify
+
 void simplify_ast(ASTNode* ast);
 
 // assumes (+ n1 n2 ... ), all A_INT
@@ -638,9 +640,9 @@ typedef struct {
 } Macro;
 
 Macro BUILTIN_MACROS[] = {
-	{"+", -1, ast_macro_add},
-	{"*", -1, ast_macro_mul},
-	{"list", -1, ast_macro_list},
+	{"+", -1, ast_macro_add}, // adds n numbers
+	{"*", -1, ast_macro_mul}, // multiplies n numbers
+	{"list", -1, ast_macro_list}, // constructs a list from n numbers
 	{0}
 };
 
@@ -703,12 +705,12 @@ void simplify_ast(ASTNode* root) {
 }
 
 int main() {
-	char* prog = "(list (* 4 1) (* 5 10) (* 6 100) (* 7 1000) (* 8 10000))";
+	char* prog = "(list \
+			(+ (* 1 5) (* 10 7) (* 100 4)) \
+			(+ (* 1 9) (* 10 3) (* 100 6) (* 1000 2)) \
+			(+ (* 1 2) (* 10 8)))";
 	
 	TokenList tl = tokenize(prog);
-	// TODO make sure parens are balanced etc
-	// assert_token_list_well_formed(tl);
-	// tl_print(tl);
 	ASTNode* ast = make_ast(tl);
 	simplify_ast(ast);
 	node_print(ast);
