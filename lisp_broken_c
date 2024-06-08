@@ -117,48 +117,20 @@ TokenList tokenize(char* prog) {
 // number
 
 typedef struct {
-	enum { N_INT, N_DOUBLE } type;
-	union { int int_value; double double_value; };
+	enum { N_INT, N_DOUBLE } type; // only for printing and representation
+	double value;
 } Number;
-
-Number num_from_int(int i) {
-	return (Number){.type = N_INT, .int_value = i};
-}
-
-int num_to_int(Number n) {
-	if (n.type == N_INT) {
-		return n.int_value;
-	} else if (n.type == N_DOUBLE) {
-		return (int) n.double_value;
-	} else {
-		panic("num_to_int: unrecognized numtype");
-	}
-}
-
-Number num_from_double(double d) {
-	return (Number){.type = N_DOUBLE, .double_value = d};
-}
-
-double num_to_double(Number n) {
-	if (n.type == N_INT) {
-		return (double) n.int_value;
-	} else if (n.type == N_DOUBLE) {
-		return n.double_value;
-	} else {
-		panic("num_to_double: unrecognized numtype");
-	}
-}
 
 // returns false if failed, or puts in the out-param
 bool num_from_string(char* str, Number* out) {
 	char** endptr;
 
 	// try converting to int (0 = auto detect base)
-	long l = strtol(str, endptr, 0);
+	int i = (int)strtol(str, endptr, 0);
 
 	if (*endptr != str) {
 		// success
-		*out = num_from_int((int)l);
+		*out = (Number){N_INT, i};
 		return true;
 	}
 
@@ -167,7 +139,7 @@ bool num_from_string(char* str, Number* out) {
 
 	if (*endptr != str) {
 		// success
-		*out = num_from_double(d);
+		*out = (Number){N_DOUBLE, d};
 		return true;
 	}
 	
@@ -175,125 +147,21 @@ bool num_from_string(char* str, Number* out) {
 }
 
 char* num_to_string(Number n) {
+
 	char* buf;
 	int len;
+
 	if (n.type == N_INT) {
-		len = snprintf(NULL, 0, "%d", n.int_value);
+		len = snprintf(NULL, 0, "%d", (int)n.value);
 		buf = malloc(len + 1);
-		snprintf(buf, len, "%d", n.int_value);
+		snprintf(buf, len, "%d", (int)n.value);
 	} else if (n.type == N_DOUBLE) {
-		len = snprintf(NULL, 0, "%lf", n.double_value);
+		len = snprintf(NULL, 0, "%lf", n.value);
 		buf = malloc(len + 1);
-		snprintf(buf, len, "%lf", n.double_value);
+		snprintf(buf, len, "%lf", n.value);
 	}
 
 	return buf;
-}
-
-bool num_eq(Number n1, Number n2) {
-	if (n1.type == N_INT && n2.type == N_INT) {
-		return n1.int_value == n2.int_value;
-	} else if (n1.type == N_INT && n2.type == N_DOUBLE) {
-		return (double)n1.int_value == n2.double_value;
-	} else if (n1.type == N_DOUBLE && n2.type == N_INT) {
-		return n1.double_value == (double)n2.int_value;
-	} else if (n1.type == N_DOUBLE && n2.type == N_DOUBLE) {
-		return n1.double_value == n2.double_value;
-	} else {
-		panic("num_eq: unknown state");
-	}
-}
-
-bool num_lt(Number n1, Number n2) {
-	if (n1.type == N_INT && n2.type == N_INT) {
-		return n1.int_value < n2.int_value;
-	} else if (n1.type == N_INT && n2.type == N_DOUBLE) {
-		return (double)n1.int_value < n2.double_value;
-	} else if (n1.type == N_DOUBLE && n2.type == N_INT) {
-		return n1.double_value < (double)n2.int_value;
-	} else if (n1.type == N_DOUBLE && n2.type == N_DOUBLE) {
-		return n1.double_value < n2.double_value;
-	} else {
-		panic("num_lt: unknown state");
-	}
-}
-
-bool num_gt(Number n1, Number n2) {
-	return num_lt(n2, n1);
-}
-
-bool num_le(Number n1, Number n2) {
-	if (n1.type == N_INT && n2.type == N_INT) {
-		return n1.int_value <= n2.int_value;
-	} else if (n1.type == N_INT && n2.type == N_DOUBLE) {
-		return (double)n1.int_value <= n2.double_value;
-	} else if (n1.type == N_DOUBLE && n2.type == N_INT) {
-		return n1.double_value <= (double)n2.int_value;
-	} else if (n1.type == N_DOUBLE && n2.type == N_DOUBLE) {
-		return n1.double_value <= n2.double_value;
-	} else {
-		panic("num_lt: unknown state");
-	}
-}
-
-bool num_ge(Number n1, Number n2) {
-	return num_le(n2, n1);
-}
-
-Number num_add(Number n1, Number n2) {
-	if (n1.type == N_INT && n2.type == N_INT) {
-		return num_from_int(n1.int_value + n2.int_value);
-	} else if (n1.type == N_INT && n2.type == N_DOUBLE) {
-		return num_from_double((double)n1.int_value + n2.double_value);
-	} else if (n1.type == N_DOUBLE && n2.type == N_INT) {
-		return num_from_double(n1.double_value + (double)n2.int_value);
-	} else if (n1.type == N_DOUBLE && n2.type == N_DOUBLE) {
-		return num_from_double(n1.double_value + n2.double_value);
-	} else {
-		panic("num_add: unknown state");
-	}
-}
-
-Number num_sub(Number n1, Number n2) {
-	if (n1.type == N_INT && n2.type == N_INT) {
-		return num_from_int(n1.int_value - n2.int_value);
-	} else if (n1.type == N_INT && n2.type == N_DOUBLE) {
-		return num_from_double(n1.int_value - n2.double_value);
-	} else if (n1.type == N_DOUBLE && n2.type == N_INT) {
-		return num_from_double(n1.double_value - n2.int_value);
-	} else if (n1.type == N_DOUBLE && n2.type == N_DOUBLE) {
-		return num_from_double(n1.double_value - n2.double_value);
-	} else {
-		panic("num_sub: unknown state");
-	}
-}
-
-Number num_mul(Number n1, Number n2) {
-	if (n1.type == N_INT && n2.type == N_INT) {
-		return num_from_int(n1.int_value * n2.int_value);
-	} else if (n1.type == N_INT && n2.type == N_DOUBLE) {
-		return num_from_double(n1.int_value * n2.double_value);
-	} else if (n1.type == N_DOUBLE && n2.type == N_INT) {
-		return num_from_double(n1.double_value * n2.int_value);
-	} else if (n1.type == N_DOUBLE && n2.type == N_DOUBLE) {
-		return num_from_double(n1.double_value * n2.double_value);
-	} else {
-		panic("num_mul: unknown state");
-	}
-}
-
-Number num_div(Number n1, Number n2) {
-	if (n1.type == N_INT && n2.type == N_INT) {
-		return num_from_int(n1.int_value * n2.int_value);
-	} else if (n1.type == N_INT && n2.type == N_DOUBLE) {
-		return num_from_double(n1.int_value * n2.double_value);
-	} else if (n1.type == N_DOUBLE && n2.type == N_INT) {
-		return num_from_double(n1.double_value * n2.int_value);
-	} else if (n1.type == N_DOUBLE && n2.type == N_DOUBLE) {
-		return num_from_double(n1.double_value * n2.double_value);
-	} else {
-		panic("num_mul: unknown state");
-	}
 }
 
 // "real" list
@@ -361,10 +229,10 @@ void node_print_rec(ASTNode* node, int level) {
 	} else if (node->type == A_NUMBER) {
 		if (node->number_value.type == N_INT) {
 			printf("ASTNode<type=A_NUMBER (int), %d>\n",
-				node->number_value.int_value);
+				(int) node->number_value.value);
 		} else if (node->number_value.type == N_DOUBLE) {
 			printf("ASTNode<type=A_NUMBER (double), %lf>\n",
-				node->number_value.double_value);
+				node->number_value.value);
 		}
 	} else if (node->type == A_LIST) {
 		printf("ASTNode<type=A_LIST, %d items>:\n",
@@ -372,9 +240,9 @@ void node_print_rec(ASTNode* node, int level) {
 		for (int i = 0; i < node->list.len; i++) {
 			Number num = node->list.items[i];
 			if (num.type == N_INT) {
-				printf("Number<int, %d>\n", num.int_value);
+				printf("Number<int, %d>\n", (int)num.value);
 			} else if (num.type == N_DOUBLE) {
-				printf("Number<double, %lf>\n", num.double_value);
+				printf("Number<double, %lf>\n", num.value);
 			}
 		}
 	} else if (node->type == A_NLIST) {
@@ -489,14 +357,22 @@ ASTNode* make_ast(TokenList tl) {
 
 void simplify_ast(ASTNode* ast);
 
-// assumes (+ n1 n2 ... ), all A_INT
-// replaces this with (<sum>)
+// macro functions
+// each function goes into it already knowing the following is true:
+// 1) the number of arguments is correct
+// 2) the first argument is indeed the name of the function that was called
+// it does NOT know if the type of the arguments is correct and needs to check
+// and call panic() if there is a mismatch
+// TODO eventually these errmsgs will need a specific location in the input file
+// so token and astnode should have that info saved
+
+// (+ num...) -> num
 void ast_macro_add(ASTNode* root) {
 
 	// (+) -> (0)
 	if (root->nlist_len == 1) {
 		root->type = A_NUMBER;
-		root->number_value = num_from_int(0);
+		root->number_value = (Number){N_DOUBLE, 0.0};
 		return;
 	}
 
@@ -509,7 +385,7 @@ void ast_macro_add(ASTNode* root) {
 		if (arg_n1->type == A_NUMBER) {
 			root->type = A_NUMBER;
 			root->number_value = arg_n1->number_value;
-		}
+		} 
 
 		// TODO somewhere in here, differentiate between type mismatch and
 		// parse error (once floats and other num types are added)
@@ -523,14 +399,14 @@ void ast_macro_add(ASTNode* root) {
 
 	// handle varargs
 
-	Number sum = num_from_int(0);
+	Number sum = (Number){N_INT, 0};
 	for (int i = 1; i < root->nlist_len; i++) {
 		ASTNode* arg_n = root->nlist_items[i];
 		
 		// try to simplify down to an int
 		simplify_ast(arg_n);
 		if (arg_n->type == A_NUMBER) {
-			sum = num_add(sum, arg_n->number_value);
+			sum.value += arg_n->number_value.value;
 		}
 
 		// expression failed to simplify
@@ -543,14 +419,42 @@ void ast_macro_add(ASTNode* root) {
 	root->number_value = sum;
 }
 
-// assumes (* n1 n2 ... ), all A_INT
-// replaces this with (<product>)
+// (- n1:num n2:num) -> num
+void ast_macro_sub(ASTNode* root) {
+
+	ASTNode* arg1 = root->nlist_items[1];
+	ASTNode* arg2 = root->nlist_items[2];
+
+	if (arg1->type != A_NUMBER) {
+		simplify_ast(arg1);
+	}
+
+	if (arg2->type != A_NUMBER) {
+		simplify_ast(arg2);
+	}
+
+	if (arg1->type != A_NUMBER) {
+		panic("-: argument #1 must be of type number");
+	}
+
+	if (arg2->type != A_NUMBER) {
+		panic("-: argument #2 must be of type number");
+	}
+
+	Number n1 = arg1->number_value;
+	Number n2 = arg2->number_value;
+
+	root->type = A_NUMBER;
+	root->number_value.value = n1.value - n2.value;
+}
+
+// (* num...) -> num
 void ast_macro_mul(ASTNode* root) {
 
 	// (*) -> (1)
 	if (root->nlist_len == 1) {
 		root->type = A_NUMBER;
-		root->number_value = num_from_int(1);
+		root->number_value = (Number){N_INT, 1};
 		return;
 	}
 
@@ -574,14 +478,14 @@ void ast_macro_mul(ASTNode* root) {
 
 	// handle varargs
 
-	Number product = num_from_int(1);
+	Number product = (Number){N_INT, 1};
 	for (int i = 1; i < root->nlist_len; i++) {
 		ASTNode* arg_n = root->nlist_items[i];
 		
 		// try to simplify down to an int
 		simplify_ast(arg_n);
 		if (arg_n->type == A_NUMBER) {
-			product = num_mul(product, arg_n->number_value);
+			product.value *= arg_n->number_value.value;
 		}
 
 		// expression failed to simplify
@@ -592,6 +496,84 @@ void ast_macro_mul(ASTNode* root) {
 
 	root->type = A_NUMBER;
 	root->number_value = product;
+}
+
+// (/ n1:num n2:num) -> num
+void ast_macro_div(ASTNode* root) {
+
+	ASTNode* arg1 = root->nlist_items[1];
+	ASTNode* arg2 = root->nlist_items[2];
+
+	if (arg1->type != A_NUMBER) {
+		simplify_ast(arg1);
+	}
+
+	if (arg2->type != A_NUMBER) {
+		simplify_ast(arg2);
+	}
+
+	if (arg1->type != A_NUMBER) {
+		panic("/: argument #1 must be of type number");
+	}
+
+	if (arg2->type != A_NUMBER) {
+		panic("/: argument #2 must be of type number");
+	}
+
+	Number n1 = arg1->number_value;
+	Number n2 = arg2->number_value;
+
+	if (n2.value == 0) {
+		panic("/: divide by zero error");
+	}
+
+	root->type = A_NUMBER;
+	root->number_value.value = n1.value / n2.value;
+}
+
+// (% n1:int n2:int) -> int
+void ast_macro_mod(ASTNode* root) {
+
+	ASTNode* arg1 = root->nlist_items[1];
+	ASTNode* arg2 = root->nlist_items[2];
+
+	if (arg1->type != A_NUMBER) {
+		simplify_ast(arg1);
+	}
+
+	if (arg2->type != A_NUMBER) {
+		simplify_ast(arg2);
+	}
+
+	if (arg1->type != A_NUMBER) {
+		panic("%: argument #1 must be of type int");
+	}
+
+	if (arg2->type != A_NUMBER) {
+		panic("%: argument #2 must be of type int");
+	}
+
+	double n1 = arg1->number_value.value;
+	double n2 = arg2->number_value.value;
+
+	if (n1 != (int)n1) {
+		panic("%: argument #1 must be of type int");
+	}
+
+	if (n2 != (int)n2) {
+		panic("%: argument #2 must be of type int");
+	}
+
+	if (n2 == 0) {
+		panic("%: divide by zero error");
+	}
+
+	int i1 = (int)n1;
+	int i2 = (int)n2;
+
+	root->type = A_NUMBER;
+	root->number_value.type = N_INT;
+	root->number_value.value = i1 % i2;
 }
 
 // (make-list num...) -> (list num)
@@ -609,7 +591,7 @@ void ast_macro_make_list(ASTNode* root) {
 	List l = list_new();
 	// -1 for "make-list"
 	list_resize(l, root->nlist_len - 1);
-
+	
 	for (int i = 1; i < root->nlist_len; i++) {
 		ASTNode* arg_n = root->nlist_items[i];
 
@@ -638,12 +620,12 @@ void ast_macro_sum(ASTNode* root) {
 
 	// case 1: is already a list
 	if (list_arg->type == A_LIST) {
-
+	
 		List* l = &root->list;
 
-		Number n = num_from_int(0);
+		Number n = (Number){N_INT, 0};
 		for (int i = 0; i < l->len; i++) {
-			n = num_add(n, l->items[i]);
+			n.value += l->items[i].value;
 		}
 
 		root->type = A_NUMBER;
@@ -659,9 +641,9 @@ void ast_macro_sum(ASTNode* root) {
 
 			List* l = &list_arg->list;
 
-			Number n = num_from_int(0);
+			Number n = (Number){N_INT, 0};
 			for (int i = 0; i < l->len; i++) {
-				n = num_add(n, l->items[i]);
+				n.value += l->items[i].value;
 			}
 
 			root->type = A_NUMBER;
@@ -697,14 +679,14 @@ void ast_macro_range(ASTNode* root) {
 		panic("range: argument #2 must be of type int");
 	}
 
-	int start = arg1->number_value.int_value;
-	int stop = arg2->number_value.int_value;
+	int start = (int) arg1->number_value.value;
+	int stop = (int) arg2->number_value.value;
 
 	root->type = A_LIST;
 	root->list = list_new();
 
 	for (int i = start; i < stop; i++) {
-		list_append(root->list, num_from_int(i));
+		list_append(root->list, (Number){N_INT, i});
 	}
 }
 
@@ -716,7 +698,10 @@ typedef struct {
 
 Macro BUILTIN_MACROS[] = {
 	{"+", -1, ast_macro_add}, // adds n numbers
+	{"-", 2, ast_macro_sub}, // x - y
 	{"*", -1, ast_macro_mul}, // multiplies n numbers
+	{"/", 2, ast_macro_div}, // x / y
+	{"%", 2, ast_macro_mod}, // x % y
 	{"make-list", -1, ast_macro_make_list}, // constructs a list from n numbers
 	{"sum", 1, ast_macro_sum}, // sum of a list of numbers
 	{"range", 2, ast_macro_range}, // constructs a list from a range
@@ -782,10 +767,12 @@ void simplify_ast(ASTNode* root) {
 }
 
 int main() {
-	char* prog = "(make-list \
-			(+ (* 1 5) (* 10 7) (* 100 4)) \
-			(+ (* 1 9) (* 10 3) (* 100 6) (* 1000 2)) \
-			(+ (* 1 2) (* 10 8)))";
+	/* char* prog = "(make-list \
+			 // (+ (* 1 5) (* 10 7) (* 100 4)) \
+			 // (+ (* 1 9) (* 10 3) (* 100 6) (* 1000 2)) \
+			 // (+ (* 1 2) (* 10 8)))";
+	// char* prog = "(sum (range -7 15))"; */
+	char* prog = "(+ 1 2)";
 	
 	TokenList tl = tokenize(prog);
 	ASTNode* ast = make_ast(tl);
