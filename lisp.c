@@ -257,8 +257,40 @@ typedef struct {
 } E_Ident;
 
 // a value returned from the program
+typedef enum {
+	V_NONE,
+	V_INT,
+	V_LIST // list of values
+} ValueType;
+
+struct Value;
+
 typedef struct {
-	int int_value;
+	struct Value* values;
+	int num_values;
+} ValueList;
+
+#define vl_new() \
+	((ValueList){0})
+
+#define vl_resize(vl, n) \
+	do { \
+		(vl).num_values = (n); \
+		(vl).values = realloc((vl).values, sizeof(Value) * (vl).num_values); \
+	} while(0)
+
+#define vl_append(vl, ... ) \
+	do { \
+		vl_resize((vl), (vl).num_values + 1); \
+		(vl).values[(vl).num_values - 1] = (__VA_ARGS__); \
+	} while(0)
+
+typedef struct Value {
+	ValueType type;
+	union {
+		int int_value;
+		ValueList list_value;
+	};
 } Value;
 
 typedef Value E_Func(struct Expr*);
@@ -270,7 +302,7 @@ typedef struct {
 	char* name;
 	int name_len;
 
-	int num_args;
+	int num_args; // THIS CAN BE -1
 
 	E_Func* actual_function;
 } E_FuncData;
@@ -278,15 +310,35 @@ typedef struct {
 typedef struct {
 	E_FuncData func;
 	struct Expr** args;
+	int real_num_args; // THIS CANNOT BE -1
 } E_FuncCall;
 
 Value e_func_add(struct Expr* e);
 Value e_func_mul(struct Expr* e);
+Value e_func_bool(struct Expr* e);
+Value e_func_fib(struct Expr* e);
+Value e_func_list(struct Expr* e);
+Value e_func_len(struct Expr* e);
+Value e_func_sum(struct Expr* e);
+Value e_func_range(struct Expr* e);
 
 // list of functions available in the runtime
 E_FuncData RT_FUNCTIONS[] = {
+
+	// numbers
 	{"+", 1, 2, e_func_add},
 	{"*", 1, 2, e_func_mul},
+
+	{"bool", 4, 1, e_func_bool}, // converts a number to 0 or 1
+
+	// math
+	{"fib", 3, 1, e_func_fib}, // nth fibonacci number
+
+	// list
+	{"list", 4, -1, e_func_list}, // construct a list
+	{"len", 3, -1, e_func_len}, // length of a list
+	{"sum", 3, 1, e_func_sum}, // sum of a list of ints
+	{"range", 5, 2, e_func_range}, // construct list from a range
 	{0}
 };
 
@@ -323,10 +375,10 @@ void expr_print_rec(Expr* e) {
 			e->funccall.func.name_len,
 			e->funccall.func.name);
 
-		for (int i = 0; i < e->funccall.func.num_args; i++) {
+		for (int i = 0; i < e->funccall.real_num_args; i++) {
 			expr_print_rec(e->funccall.args[i]);
 
-			if (i != e->funccall.func.num_args - 1) {
+			if (i != e->funccall.real_num_args - 1) {
 				putc(' ', stdout);
 			}
 
@@ -391,22 +443,32 @@ bool ast_matches_funccall(ASTNode* ast, E_FuncCall* out) {
 			continue;
 		}
 
-		// function name matches
+		// at this point, function name matches
 
-		// +1 for fn name
-		if (ast->list_len != fd->num_args + 1) {
+		int real_num_args;
+
+		if (fd->num_args != -1) {
+			real_num_args = fd->num_args;
+		} else {
+			real_num_args = ast->list_len - 1;
+		}
+
+		if (real_num_args != ast->list_len - 1) {
 			panic("%.*s: expected %d arguments, got %d",
 				ast->list_items[0]->atom_len,
 				ast->list_items[0]->atom_str,
-				fd->num_args,
+				real_num_args,
 				ast->list_len - 1);
 		}
 
 		out->func = *fd;
-		out->args = malloc(fd->num_args * sizeof(Expr*));
-		for (int i = 0; i < fd->num_args; i++) {
+		out->real_num_args = real_num_args;
+		out->args = malloc(real_num_args * sizeof(Expr*));
+		
+		for (int i = 0; i < real_num_args; i++) {
 			out->args[i] = parse(ast->list_items[i + 1]);
 		}
+
 		return true;
 	}
 
@@ -443,23 +505,220 @@ Expr* parse(ASTNode* ast) {
 
 Value eval(Expr* e);
 
+
+
+// (+ (int n1) (int n2))
 Value e_func_add(Expr* e) {
+
+	if (e->funccall.func.num_args != 2) {
+		panic("+: got %d arguments, expected 2", e->funccall.real_num_args);
+	}
+
+	Value arg0 = eval(e->funccall.args[0]);
+	Value arg1 = eval(e->funccall.args[1]);
+
+	if (arg0.type != V_INT) {
+		panic("+: argument 1 should be int");
+	}
+
+	if (arg1.type != V_INT) {
+		panic("+: argument 2 should be int");
+	}
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
 	return (Value){
-		.int_value = eval(e->funccall.args[0]).int_value
-				+ eval(e->funccall.args[1]).int_value
+		.type = V_INT,
+		.int_value = n0 + n1
 	};
 }
 
+// (* (int n1) (int n2))
 Value e_func_mul(Expr* e) {
+
+	if (e->funccall.real_num_args != 2) {
+		panic("*: got %d arguments, expected 2", e->funccall.real_num_args);
+	}
+
+	Value arg0 = eval(e->funccall.args[0]);
+	Value arg1 = eval(e->funccall.args[1]);
+
+	if (arg0.type != V_INT) {
+		panic("*: argument 1 should be int");
+	}
+
+	if (arg1.type != V_INT) {
+		panic("*: argument 2 should be int");
+	}
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
 	return (Value){
-		.int_value = eval(e->funccall.args[0]).int_value
-				* eval(e->funccall.args[1]).int_value
+		.type = V_INT,
+		.int_value = n0 * n1
+	};
+}
+
+Value e_func_bool(struct Expr* e) {
+	if (e->funccall.func.num_args != 1) {
+		panic("bool: got %d arguments, expected 1", e->funccall.real_num_args);
+	}
+
+	Value arg0 = eval(e->funccall.args[0]);
+
+	if (arg0.type != V_INT) {
+		panic("bool: argument 1 should be int");
+	}
+
+	int n0 = arg0.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = !!n0
+	};
+}
+
+size_t e_func_fib_r(size_t n) {
+	if (n < 2)
+		return 1;
+	else
+		return e_func_fib_r(n-1) + e_func_fib_r(n-2);
+}
+
+// (fib n)
+Value e_func_fib(struct Expr* e) {
+	if (e->funccall.func.num_args != 1) {
+		panic("fib: got %d arguments, expected 1", e->funccall.real_num_args);
+	}
+
+	Value arg0 = eval(e->funccall.args[0]);
+
+	if (arg0.type != V_INT) {
+		panic("+: argument 1 should be int");
+	}
+
+	int n = arg0.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = e_func_fib_r(n)
+	};
+}
+
+// (list (int n0) (int n1) ...)
+Value e_func_list(struct Expr* e) {
+	Value v = {
+		.type = V_LIST,
+		.list_value = vl_new(),
+	};
+
+	int n = e->funccall.real_num_args;
+
+	for (int i = 0; i < n; i++) {
+		vl_append(v.list_value, eval(e->funccall.args[i]));
+	}
+	
+	return v;
+}
+
+// (len (list l))
+Value e_func_len(struct Expr* e) {
+
+	if (e->funccall.real_num_args != 1) {
+		panic("len: got %d arguments, expected 1", e->funccall.real_num_args);
+	}
+
+	Value arg0 = eval(e->funccall.args[0]);
+
+	if (arg0.type != V_LIST) {
+		panic("len: argument 1 should be list");
+	}
+
+	Value v = {
+		.type = V_INT,
+		.int_value = arg0.list_value.num_values
+	};
+
+	return v;
+}
+
+// (sum (list l))
+Value e_func_sum(struct Expr* e) {
+
+	int n = e->funccall.real_num_args;
+	if (n != 1) {
+		panic("sum: got %d arguments, expected 1", n);
+	}
+
+	Value arg0 = eval(e->funccall.args[0]);
+
+	if (arg0.type != V_LIST) {
+		panic("sum: argument 1 should be list");
+	}
+	
+	Value v = {
+		.type = V_INT,
+		.int_value = 0
+	};
+
+	int n_list_args = arg0.list_value.num_values;
+
+	for (int i = 0; i < n_list_args; i++) {
+
+		Value* arg_value_n = &arg0.list_value.values[i];
+		if (arg_value_n->type != V_INT) {
+			panic("sum: argument 1 should be list of int");
+		}
+
+		v.int_value += arg_value_n->int_value;
+	}
+
+	return v;
+}
+
+// (range start stop)
+Value e_func_range(struct Expr* e) {
+
+	int n = e->funccall.real_num_args;
+	if (n != 2) {
+		panic("range: got %d arguments, expected 2", n);
+	}
+
+	Value arg0 = eval(e->funccall.args[0]);
+	Value arg1 = eval(e->funccall.args[1]);
+
+	if (arg0.type != V_INT) {
+		panic("range: argument 1 should be int");
+	}
+
+	if (arg1.type != V_INT) {
+		panic("range: argument 2 should be int");
+	}
+
+	int start = arg0.int_value;
+	int stop = arg1.int_value;
+
+	ValueList l = vl_new();
+
+	for (int i = start; i < stop; i++) {
+		Value v = {
+			.type = V_INT,
+			.int_value = i	
+		};
+		vl_append(l, v);
+	}
+
+	return (Value){
+		.type = V_LIST,
+		.list_value = l
 	};
 }
 
 Value eval(Expr* e) {
 	if (e->type == E_INTLIT) {
-		return (Value){.int_value = e->intlit};
+		return (Value){.type = V_INT, .int_value = e->intlit};
 	}
 
 	if (e->type == E_IDENT) {
@@ -473,7 +732,7 @@ Value eval(Expr* e) {
 
 int main() {
 
-	char* line = "(+ (* 9 3) 7)";
+	char* line = "(bool 0)";
 	
 	TokenList tl = tokenize(line);
 	// TODO make sure parens are balanced etc
@@ -487,7 +746,8 @@ int main() {
 	// expr_print(e);
 
 	Value result = eval(e);
+	// printf("%d\n", result.list_value.num_values);
 	printf("%d\n", result.int_value);
-
+	
 	return 0;
 }
