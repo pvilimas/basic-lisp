@@ -16,6 +16,8 @@
 		exit(1); \
 	} while(0)
 
+// step 1: program string to list of tokens
+
 typedef enum {
 	T_NONE,
 	T_OPEN_PAREN, // 1 char
@@ -111,10 +113,12 @@ TokenList tokenize(char* prog) {
 	return l;
 }
 
+// step 2: list of tokens to ast tree
+
 typedef enum {
 	A_NONE,
-	A_ATOM,
-	A_LIST
+	A_ATOM, // singular item
+	A_LIST // a list of other ASTNodes
 } ASTType;
 
 typedef struct ASTNode {
@@ -249,6 +253,9 @@ ASTNode* make_ast(TokenList tl) {
 	}
 }
 
+// step 3: ast tree to expr tree
+// step 4: collapse expr tree to get a single value
+
 struct Expr;
 
 typedef struct {
@@ -295,6 +302,15 @@ typedef struct Value {
 
 typedef Value E_Func(struct Expr*);
 
+// pass this to rt_func() to signify that the function takes a variable #
+// of arguments
+// RTFN = runtime function
+#define RTFN_VARARGS -1
+
+// symbolic macro to show what type the "actual" varargs all are
+// eg. sum-n-lists INT, VARARGS(LIST) 
+#define VARARGS(T) T
+
 /* 	associative type that holds the name and pointer to a function as well as
 	# of arguments */
 typedef struct {
@@ -303,6 +319,8 @@ typedef struct {
 	int name_len;
 
 	int num_args; // THIS CAN BE -1
+	ValueType* arg_types; // NULL if num_args is -1
+	ValueType return_type;
 
 	E_Func* actual_function;
 } E_FuncData;
@@ -314,37 +332,69 @@ typedef struct {
 } E_FuncCall;
 
 Value e_func_add(struct Expr* e);
+Value e_func_sub(struct Expr* e);
 Value e_func_mul(struct Expr* e);
+Value e_func_mod(struct Expr* e);
+
+Value e_func_eq(struct Expr* e);
+Value e_func_neq(struct Expr* e);
+Value e_func_lt(struct Expr* e);
+Value e_func_gt(struct Expr* e);
+Value e_func_le(struct Expr* e);
+Value e_func_ge(struct Expr* e);
+
 Value e_func_bool(struct Expr* e);
+
 Value e_func_fib(struct Expr* e);
+
 Value e_func_list(struct Expr* e);
 Value e_func_len(struct Expr* e);
 Value e_func_sum(struct Expr* e);
 Value e_func_range(struct Expr* e);
 
+Value e_func_if(struct Expr* e);
+
+// list of functions defined in the runtime
+typedef struct {
+	E_FuncData* fns;
+	int num_fns;
+} RT_FnList;
+
+#define rt_fnlist_new() \
+	((RT_FnList){0})
+
+#define rt_fnlist_resize(l, n) \
+	do { \
+		(l).num_fns = (n); \
+		(l).fns = realloc((l).fns, sizeof(E_FuncData) * (l).num_fns); \
+	} while(0)
+
+#define rt_fnlist_append(l, ...) \
+	do { \
+		rt_fnlist_resize(l, (l).num_fns + 1); \
+		(l).fns[(l).num_fns - 1] = (E_FuncData)__VA_ARGS__; \
+	} while(0)
+
+#define rt_fnlist_swap(l, i, j) \
+	do { \
+		E_FuncData temp = (l).fns[(i)]; \
+		(l).fns[(i)] = (l).fns[(j)]; \
+		(l).fns[(j)] = temp; \
+	} while(0)
+
+#define rt_fnlist_remove(l, index) \
+	do { \
+		rt_fnlist_swap(l, index, (l).num_fns - 1); \
+		rt_fnlist_resize(l, (l).num_fns - 1); \
+	} while(0)
+
 // list of functions available in the runtime
-E_FuncData RT_FUNCTIONS[] = {
-
-	// numbers
-	{"+", 1, 2, e_func_add},
-	{"*", 1, 2, e_func_mul},
-
-	{"bool", 4, 1, e_func_bool}, // converts a number to 0 or 1
-
-	// math
-	{"fib", 3, 1, e_func_fib}, // nth fibonacci number
-
-	// list
-	{"list", 4, -1, e_func_list}, // construct a list
-	{"len", 3, -1, e_func_len}, // length of a list
-	{"sum", 3, 1, e_func_sum}, // sum of a list of ints
-	{"range", 5, 2, e_func_range}, // construct list from a range
-	{0}
-};
+// their argument count, argument types, return types are all specified in here
+RT_FnList RT_BUILTIN_FUNCTIONS = {0};
 
 typedef enum {
 	E_NONE,
-	E_INTLIT,
+	E_INT,
 	E_IDENT,
 	E_FUNCCALL,
 } ExprType;
@@ -368,7 +418,7 @@ typedef struct Expr {
 	} while(0)
 
 void expr_print_rec(Expr* e) {
-	if (e->type == E_INTLIT) {
+	if (e->type == E_INT) {
 		printf("(int %d)", e->intlit);
 	} else if (e->type == E_FUNCCALL) {
 		printf("(%.*s ",
@@ -434,7 +484,9 @@ bool ast_matches_funccall(ASTNode* ast, E_FuncCall* out) {
 		return false;
 	}
 
-	for (E_FuncData* fd = &RT_FUNCTIONS[0]; fd->name != NULL; fd++) {
+	for (int i = 0; i < RT_BUILTIN_FUNCTIONS.num_fns; i++) {
+		E_FuncData* fd = &RT_BUILTIN_FUNCTIONS.fns[i];
+
 		if (strncmp(
 			ast->list_items[0]->atom_str,
 			fd->name,
@@ -472,7 +524,7 @@ bool ast_matches_funccall(ASTNode* ast, E_FuncCall* out) {
 		return true;
 	}
 
-	panic("ast_matches_funccall: function \"%.*s\" not found",
+	panic("unknown function \"%.*s\"",
 		ast->list_items[0]->atom_len,
 		ast->list_items[0]->atom_str);
 }
@@ -486,7 +538,7 @@ Expr* parse(ASTNode* ast) {
 	}
 
 	if (ast_matches_intlit(ast, &e->intlit)) {
-		e->type = E_INTLIT;
+		e->type = E_INT;
 		return e;
 	}
 	
@@ -505,25 +557,50 @@ Expr* parse(ASTNode* ast) {
 
 Value eval(Expr* e);
 
+char* stringify_value_type(ValueType type) {
+	switch (type) {
+		case V_NONE: return "none";
+		case V_INT: return "int";
+		case V_LIST: return "list of int";
+	}
+}
 
+// called outside of each e_func_***
+void assert_funccall_arg_count_correct(Expr* e) {
+	if (e->funccall.func.num_args == -1
+	|| e->funccall.func.num_args == e->funccall.real_num_args) {
+		return;
+	}
+
+	panic("%.*s, got %d arguments, expected %d",
+		e->funccall.func.name_len,
+		e->funccall.func.name,
+		e->funccall.real_num_args,
+		e->funccall.func.num_args);
+}
+
+// called inside each e_func_***, once per argument
+Value try_eval_arg_as_type(Expr* e, int arg_num, ValueType type) {
+
+	E_FuncData fd = e->funccall.func;
+	Value v = eval(e->funccall.args[arg_num]);
+	if (v.type != type) {
+		panic("%.*s: argument %d is type %s, expected %s",
+			fd.name_len,
+			fd.name,
+			arg_num,
+			stringify_value_type(v.type),
+			stringify_value_type(type));
+	}
+
+	return v;
+}
 
 // (+ (int n1) (int n2))
 Value e_func_add(Expr* e) {
 
-	if (e->funccall.func.num_args != 2) {
-		panic("+: got %d arguments, expected 2", e->funccall.real_num_args);
-	}
-
-	Value arg0 = eval(e->funccall.args[0]);
-	Value arg1 = eval(e->funccall.args[1]);
-
-	if (arg0.type != V_INT) {
-		panic("+: argument 1 should be int");
-	}
-
-	if (arg1.type != V_INT) {
-		panic("+: argument 2 should be int");
-	}
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
 
 	int n0 = arg0.int_value;
 	int n1 = arg1.int_value;
@@ -534,23 +611,26 @@ Value e_func_add(Expr* e) {
 	};
 }
 
+// (- (int n1) (int n2))
+Value e_func_sub(Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = n0 - n1
+	};
+}
+
 // (* (int n1) (int n2))
 Value e_func_mul(Expr* e) {
 
-	if (e->funccall.real_num_args != 2) {
-		panic("*: got %d arguments, expected 2", e->funccall.real_num_args);
-	}
-
-	Value arg0 = eval(e->funccall.args[0]);
-	Value arg1 = eval(e->funccall.args[1]);
-
-	if (arg0.type != V_INT) {
-		panic("*: argument 1 should be int");
-	}
-
-	if (arg1.type != V_INT) {
-		panic("*: argument 2 should be int");
-	}
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
 
 	int n0 = arg0.int_value;
 	int n1 = arg1.int_value;
@@ -561,16 +641,115 @@ Value e_func_mul(Expr* e) {
 	};
 }
 
+// (% (int n1) (int n2))
+Value e_func_mod(Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = n0 % n1
+	};
+}
+
+// (= n1 n2)
+Value e_func_eq(struct Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = n0 == n1
+	};
+}
+
+// (!= n1 n2)
+Value e_func_neq(struct Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = n0 != n1
+	};
+}
+
+// (< n1 n2)
+Value e_func_lt(struct Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = n0 < n1
+	};
+}
+
+// (> n1 n2)
+Value e_func_gt(struct Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = n0 > n1
+	};
+}
+
+// (<= n1 n2)
+Value e_func_le(struct Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = n0 <= n1
+	};
+}
+
+// (>= n1 n2)
+Value e_func_ge(struct Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+
+	int n0 = arg0.int_value;
+	int n1 = arg1.int_value;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = n0 >= n1
+	};
+}
+
+// (bool (int x))
 Value e_func_bool(struct Expr* e) {
-	if (e->funccall.func.num_args != 1) {
-		panic("bool: got %d arguments, expected 1", e->funccall.real_num_args);
-	}
 
-	Value arg0 = eval(e->funccall.args[0]);
-
-	if (arg0.type != V_INT) {
-		panic("bool: argument 1 should be int");
-	}
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
 
 	int n0 = arg0.int_value;
 
@@ -589,15 +768,8 @@ size_t e_func_fib_r(size_t n) {
 
 // (fib n)
 Value e_func_fib(struct Expr* e) {
-	if (e->funccall.func.num_args != 1) {
-		panic("fib: got %d arguments, expected 1", e->funccall.real_num_args);
-	}
 
-	Value arg0 = eval(e->funccall.args[0]);
-
-	if (arg0.type != V_INT) {
-		panic("+: argument 1 should be int");
-	}
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
 
 	int n = arg0.int_value;
 
@@ -609,145 +781,316 @@ Value e_func_fib(struct Expr* e) {
 
 // (list (int n0) (int n1) ...)
 Value e_func_list(struct Expr* e) {
-	Value v = {
-		.type = V_LIST,
-		.list_value = vl_new(),
-	};
 
-	int n = e->funccall.real_num_args;
+	ValueList result = vl_new();
 
-	for (int i = 0; i < n; i++) {
-		vl_append(v.list_value, eval(e->funccall.args[i]));
+	// empty list
+	if (e->funccall.real_num_args == 0) {
+		return (Value){
+			.type = V_LIST,
+			.list_value = result
+		};
+	}
+
+	for (int i = 0; i < e->funccall.real_num_args; i++) {
+		Value list_item = try_eval_arg_as_type(e, i, V_INT);
+		vl_append(result, list_item);
 	}
 	
-	return v;
+	return (Value){
+		.type = V_LIST,
+		.list_value = result
+	};
 }
 
 // (len (list l))
 Value e_func_len(struct Expr* e) {
 
-	if (e->funccall.real_num_args != 1) {
-		panic("len: got %d arguments, expected 1", e->funccall.real_num_args);
-	}
+	Value arg0 = try_eval_arg_as_type(e, 0, V_LIST);
 
-	Value arg0 = eval(e->funccall.args[0]);
+	int result = arg0.list_value.num_values;
 
-	if (arg0.type != V_LIST) {
-		panic("len: argument 1 should be list");
-	}
-
-	Value v = {
+	return (Value){
 		.type = V_INT,
-		.int_value = arg0.list_value.num_values
+		.int_value = result
 	};
-
-	return v;
 }
 
 // (sum (list l))
 Value e_func_sum(struct Expr* e) {
 
-	int n = e->funccall.real_num_args;
-	if (n != 1) {
-		panic("sum: got %d arguments, expected 1", n);
-	}
-
-	Value arg0 = eval(e->funccall.args[0]);
-
-	if (arg0.type != V_LIST) {
-		panic("sum: argument 1 should be list");
-	}
+	Value arg0 = try_eval_arg_as_type(e, 0, V_LIST);
 	
-	Value v = {
-		.type = V_INT,
-		.int_value = 0
-	};
+	int result = 0;
 
-	int n_list_args = arg0.list_value.num_values;
-
-	for (int i = 0; i < n_list_args; i++) {
+	for (int i = 0; i < arg0.list_value.num_values; i++) {
 
 		Value* arg_value_n = &arg0.list_value.values[i];
 		if (arg_value_n->type != V_INT) {
 			panic("sum: argument 1 should be list of int");
 		}
 
-		v.int_value += arg_value_n->int_value;
+		result += arg_value_n->int_value;
 	}
 
-	return v;
+	return (Value){
+		.type = V_INT,
+		.int_value = result
+	};
 }
 
 // (range start stop)
 Value e_func_range(struct Expr* e) {
 
-	int n = e->funccall.real_num_args;
-	if (n != 2) {
-		panic("range: got %d arguments, expected 2", n);
-	}
-
-	Value arg0 = eval(e->funccall.args[0]);
-	Value arg1 = eval(e->funccall.args[1]);
-
-	if (arg0.type != V_INT) {
-		panic("range: argument 1 should be int");
-	}
-
-	if (arg1.type != V_INT) {
-		panic("range: argument 2 should be int");
-	}
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
 
 	int start = arg0.int_value;
 	int stop = arg1.int_value;
 
-	ValueList l = vl_new();
+	ValueList result = vl_new();
 
 	for (int i = start; i < stop; i++) {
-		Value v = {
+		vl_append(result, (Value){
 			.type = V_INT,
 			.int_value = i	
-		};
-		vl_append(l, v);
+		});
 	}
 
 	return (Value){
 		.type = V_LIST,
-		.list_value = l
+		.list_value = result
 	};
 }
 
+// (if cond expr1 expr2)
+Value e_func_if(struct Expr* e) {
+
+	Value arg0 = try_eval_arg_as_type(e, 0, V_INT);
+	Value arg1 = try_eval_arg_as_type(e, 1, V_INT);
+	Value arg2 = try_eval_arg_as_type(e, 2, V_INT);
+
+	int if_cond = arg0.int_value;
+	int then_expr = arg1.int_value;
+	int else_expr = arg2.int_value;
+
+	int result = if_cond ? then_expr : else_expr;
+
+	return (Value){
+		.type = V_INT,
+		.int_value = result
+	};
+}
+
+// another associative type
+typedef struct {
+	char* name;
+	Value value;
+} VarData;
+
+typedef struct {
+	VarData* vars;
+	int num_vars;	
+} RT_VarList;
+
+#define rt_varlist_new() \
+	((RT_VarList){0})
+
+#define rt_varlist_resize(l, n) \
+	do { \
+		(l).num_vars = (n); \
+		(l).vars = realloc((l).vars, sizeof(VarData) * (l).num_vars); \
+	} while(0)
+
+#define rt_varlist_append(l, ...) \
+	do { \
+		rt_varlist_resize(l, (l).num_vars + 1); \
+		(l).vars[(l).num_vars - 1] = (VarData)__VA_ARGS__; \
+	} while(0)
+
+#define rt_varlist_swap(l, i, j) \
+	do { \
+		VarData temp = (l).vars[(i)]; \
+		(l).vars[(i)] = (l).vars[(j)]; \
+		(l).vars[(j)] = temp; \
+	} while(0)
+
+#define rt_varlist_remove(l, index) \
+	do { \
+		rt_fnlist_swap(l, index, (l).num_vars - 1); \
+		rt_fnlist_resize(l, (l).num_vars - 1); \
+	} while(0)
+
+RT_VarList RT_CONSTANT_VARS = {0};
+
+// a name that starts with '#'
+Value eval_constant(Expr* e) {
+	for (int i = 0; i < RT_CONSTANT_VARS.num_vars; i++) {
+		VarData* vd = &RT_CONSTANT_VARS.vars[i];
+		if (!strncmp(
+			vd->name,
+			e->ident.name,
+			e->ident.len))
+		{
+			// names match
+			return vd->value;
+		}
+	}
+	panic("unknown constant %.*s", e->ident.len, e->ident.name);
+}
+
 Value eval(Expr* e) {
-	if (e->type == E_INTLIT) {
+	if (e->type == E_INT) {
 		return (Value){.type = V_INT, .int_value = e->intlit};
 	}
 
 	if (e->type == E_IDENT) {
+		if (e->ident.len == 0) {
+			panic("somehow ident len is 0, fix this now");
+		}
+
+		if (e->ident.name[0] == '#') {
+			// constant
+			return eval_constant(e);
+		}
+		
 		panic("ident %.*s has no value yet", e->ident.len, e->ident.name);
 	}
 
 	if (e->type == E_FUNCCALL) {
+		assert_funccall_arg_count_correct(e);
 		return e->funccall.func.actual_function(e);
 	}
 }
 
+/*
+	TODO
+	- make sure parens are balanced and token list is well formed
+	- ast edge cases?
+	- "or" and "and" functions for list of bools
+	- remaining math+comparison functions
+	- specific types for bool and float
+	- printing types ("list of bool") or type representation
+		- maybe (type mylist (list bool))
+	- string types and string literals
+	- runtime and variables
+	- reading from a file/command line interface and help messages
+	- repl mode
+	- better error messages
+
+	
+
+	language currently supports:
+
+	- builtin types:
+		- ints, or just integer literals that fit into standard C int type
+		- lists of int literals
+		- TODO boolean constants #true and #false
+
+	- constants which always start with a #, but it's not a reserved character
+
+	- ability to do function calls with prefix notation similar to lisp
+		(+ 5 6) = 11
+
+	- builtin functions:
+
+		- arithmetic operators, all are (int, int) -> int
+			(+ x y)
+			(- x y)
+			(* x y)
+			(% x y)
+
+		- comparison operators, all are (int, int) -> int
+			(= x y)
+			(!= x y)
+			(< x y)
+			(<= x y)
+			(> x y)
+			(>= x y)
+
+		- type conversion
+			(bool x) - convert a number to 0 or 1 (equivalent to `!!x` in C)
+
+		- list operations
+			(list ...) - construct a list of ints
+			(len l) - get the length of a list
+			(sum l) - sum up a list of ints
+			(range start stop) - construct a list of ints in range [start, stop)
+
+		- logic
+			(if cond then else)
+
+		- other
+			(fib n) - compute nth fibonacci number
+
+*/
+
+void rt_init();
+
 int main() {
 
-	char* line = "(bool 0)";
-	
+	rt_init();
+
+	char* line = "(if #false 5 11)";	
 	TokenList tl = tokenize(line);
-	// TODO make sure parens are balanced etc
-	// assert_token_list_well_formed(tl);
-	// tl_print(tl);
-
 	ASTNode* ast = make_ast(tl);
-
 	Expr* e = parse(ast);
-
-	// expr_print(e);
-
 	Value result = eval(e);
+
 	// printf("%d\n", result.list_value.num_values);
 	printf("%d\n", result.int_value);
 	
 	return 0;
+}
+
+#define rt_add_constant(name_cstrlit, ...) \
+	rt_varlist_append(RT_CONSTANT_VARS, (VarData){ \
+		.name=(name_cstrlit), \
+		.value=(__VA_ARGS__) \
+	})
+
+// declare a runtime function (without having to specify name len separately)
+// the ... is the list of return types so you can pass like {V_INT, V_LIST, V_INT, ...}
+// for varargs all of the varargs will be evaluated as the last type in the list
+// and num_args should be the number of REQUIRED (aka non-vararg) arguments, 
+// which can be 0
+#define rt_add_func(name_cstrlit, actual_func_ptr, \
+func_arg_count, func_ret_type, ...) \
+	rt_fnlist_append(RT_BUILTIN_FUNCTIONS, (E_FuncData){ \
+		.name = (name_cstrlit), \
+		.name_len = strlen(name_cstrlit), \
+		.num_args = (func_arg_count == RTFN_VARARGS \
+			? RTFN_VARARGS \
+			: (int) (sizeof((ValueType[]) __VA_ARGS__) / sizeof(ValueType))), \
+		.arg_types = ((ValueType[]) __VA_ARGS__), \
+		.return_type = func_ret_type, \
+		.actual_function = (actual_func_ptr) \
+	})
+
+void rt_init() {
+
+	RT_CONSTANT_VARS = rt_varlist_new();
+
+	rt_add_constant("#false", (Value){.type=V_INT, .int_value=0});
+	rt_add_constant("#true", (Value){.type=V_INT, .int_value=1});
+
+	RT_BUILTIN_FUNCTIONS = rt_fnlist_new();
+
+	rt_add_func("+", e_func_add, V_INT, 2, {V_INT, V_INT});
+	rt_add_func("-", e_func_sub, V_INT, 2, {V_INT, V_INT});
+	rt_add_func("*", e_func_mul, V_INT, 2, {V_INT, V_INT});
+	rt_add_func("%", e_func_mod, V_INT, 2, {V_INT, V_INT});
+	rt_add_func("=", e_func_eq, V_INT, 2, {V_INT, V_INT});
+	rt_add_func("!=", e_func_neq, V_INT, 2, {V_INT, V_INT});
+	rt_add_func(">", e_func_gt, V_INT, 2, {V_INT, V_INT});
+	rt_add_func("<=", e_func_le, V_INT, 2, {V_INT, V_INT});
+	rt_add_func("<", e_func_lt, V_INT, 2, {V_INT, V_INT});
+	rt_add_func(">=", e_func_ge, V_INT, 2, {V_INT, V_INT});
+	rt_add_func("bool", e_func_bool, V_INT, 1, {V_INT});
+	rt_add_func("fib", e_func_fib, V_INT, 1, {V_INT});
+	rt_add_func("list", e_func_list, V_LIST, RTFN_VARARGS, {});
+	rt_add_func("len", e_func_len, V_INT, 1, {V_LIST});
+	rt_add_func("sum", e_func_sum, V_INT, 1, {V_LIST});
+	rt_add_func("range", e_func_range, V_LIST, 2, {V_INT, V_INT});
+	rt_add_func("if", e_func_if, V_INT, 3, {V_INT, V_INT, V_INT});
 }
